@@ -1,6 +1,6 @@
 // Package classification of Product API
 //
-// Documentation for Product API
+// # Documentation for Product API
 //
 // Schemes: http
 // BasePath: /
@@ -11,32 +11,71 @@
 // Produces:
 // -application/json
 // swagger:meta
-
 package handlers
 
 import (
 	"context"
 	"fmt"
 	"log"
-	"microservices/data"
 	"net/http"
+	protos "products/currency"
+	"products/data"
 	"strconv"
 
 	"github.com/gorilla/mux"
 )
 
+// swagger:response productsResponse
+type productsResponseWrapper struct {
+	// All produts in the system
+	// in:body
+	Body []data.Product
+}
+
+// swagger:response noContent
+type productsNoContent struct {
+}
+
+// swagger:parameters deleteProduct
+type productIDParameterWrapper struct {
+	// The id of the product to delete from database
+	// in:path
+	// required:true
+	ID int `json:"id"`
+}
+
 type Products struct {
-	l *log.Logger
+	l  *log.Logger
+	cc protos.CurrencyClient
 }
 
-func NewProducts(l *log.Logger) *Products {
-	return &Products{l}
+func NewProducts(l *log.Logger, cc protos.CurrencyClient) *Products {
+	return &Products{l, cc}
 }
 
+// swagger:route GET /products products listProducts
+// Returns a list of products
+// responses:
+//
+//	200:productsResponse
 func (p *Products) GetProducts(rw http.ResponseWriter, r *http.Request) {
 	p.l.Println("Handle GET Products")
+	rw.Header().Add("Content-Type", "application/json")
+	// get exchange rate
+	rr := &protos.RateRequest{
+		Base:        protos.Currencies(protos.Currencies_value["EUR"]),
+		Destination: protos.Currencies(protos.Currencies_value["GBP"]),
+	}
+	resp, err := p.cc.GetRate(context.Background(), rr)
+	if err != nil {
+		p.l.Println("[Error] error getting new rate", err)
+		return
+	}
 	lp := data.GetProducts()
-	err := lp.ToJSON(rw)
+	for _, p := range lp {
+		p.Price = p.Price * resp.Rate
+	}
+	err = lp.ToJSON(rw)
 	if err != nil {
 		http.Error(rw, "Unable to marshal json", http.StatusInternalServerError)
 		return
@@ -97,4 +136,24 @@ func (p *Products) MiddlewareProductValidation(next http.Handler) http.Handler {
 		req := r.WithContext(ctx)
 		next.ServeHTTP(rw, req)
 	})
+}
+
+// swagger:route DELETE /products/{id} products deleteProduct
+// deletes a product
+// responses:
+// 201: noContent
+func (p *Products) DeleteProduct(rw http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		http.Error(rw, "Unable to convert id", http.StatusBadRequest)
+		return
+	}
+	p.l.Println("Handle Delete Product", id)
+	err = data.DeleteProduct(id)
+	if err != nil {
+		http.Error(rw, "Product not found", http.StatusNotFound)
+		return
+	}
+	rw.Write([]byte(fmt.Sprintf("Product %v deleted", id)))
+	p.l.Printf("Product %v deleted", id)
 }

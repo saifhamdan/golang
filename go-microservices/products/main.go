@@ -3,19 +3,32 @@ package main
 import (
 	"context"
 	"log"
-	"microservices/handlers"
 	"net/http"
 	"os"
 	"os/signal"
+	protos "products/currency"
+	"products/handlers"
 	"time"
 
+	"github.com/go-openapi/runtime/middleware"
+	gohandlers "github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func main() {
 	l := log.New(os.Stdout, "product-api ", log.LstdFlags)
-	ph := handlers.NewProducts(l)
 
+	gopts := grpc.WithTransportCredentials(insecure.NewCredentials())
+	conn, err := grpc.Dial("0.0.0.0:9092", gopts)
+	if err != nil {
+		panic(err)
+	}
+	defer conn.Close()
+
+	cc := protos.NewCurrencyClient(conn)
+	ph := handlers.NewProducts(l, cc)
 	sm := mux.NewRouter()
 	getRouter := sm.Methods(http.MethodGet).Subrouter()
 	getRouter.HandleFunc("/", ph.GetProducts)
@@ -27,13 +40,26 @@ func main() {
 	postRouter := sm.Methods(http.MethodPost).Subrouter()
 	postRouter.Use(ph.MiddlewareProductValidation)
 	postRouter.HandleFunc("/", ph.AddProduct)
+
+	deleteRouter := sm.Methods(http.MethodDelete).Subrouter()
+	deleteRouter.HandleFunc("/{id:[0-9]+}", ph.DeleteProduct)
+
+	opts := middleware.RedocOpts{
+		SpecURL: "/swagger.yaml",
+	}
+	sh := middleware.Redoc(opts, nil)
+
+	getRouter.Handle("/docs", sh)
+	getRouter.Handle("/swagger.yaml", http.FileServer(http.Dir("./")))
+
 	// http.HandleFunc("/goodbye", func(w http.ResponseWriter, r *http.Request) {
 	// 	log.Println("Good Bye")
 	// })
 
+	ch := gohandlers.CORS(gohandlers.AllowedOrigins([]string{"http://localhost:3000"}))
 	s := &http.Server{
 		Addr:         "127.0.0.1:9090",
-		Handler:      sm,
+		Handler:      ch(sm),
 		IdleTimeout:  120 * time.Second,
 		ReadTimeout:  1 * time.Second,
 		WriteTimeout: 1 * time.Second,
